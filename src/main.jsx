@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 
 const SUPABASE_URL = "https://tcsegbcefajkvfqfluyy.supabase.co";
@@ -15,13 +15,21 @@ async function sbInsert(row){
   if(!r.ok) throw new Error(await r.text());
   return r.json();
 }
+async function sbUpdate(id,row){
+  const r=await fetch(`${SUPABASE_URL}/rest/v1/drone_logs?id=eq.${id}`,{method:"PATCH",headers:H,body:JSON.stringify(row)});
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function sbDelete(id){
+  const r=await fetch(`${SUPABASE_URL}/rest/v1/drone_logs?id=eq.${id}`,{method:"DELETE",headers:H});
+  if(!r.ok) throw new Error(await r.text());
+}
 async function sbSelect(){
   const r=await fetch(`${SUPABASE_URL}/rest/v1/drone_logs?select=*&order=mission_date.desc`,{headers:H});
   if(!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
-// 時間轉分鐘
 function toMin(str){
   if(!str) return 0;
   const s=str.replace("：",":").trim();
@@ -30,10 +38,9 @@ function toMin(str){
 }
 function toHHMM(min){
   if(!min&&min!==0) return "0時00分";
-  const h=Math.floor(min/60),m=min%60;
-  return `${h}時${String(m).padStart(2,"0")}分`;
+  return `${Math.floor(min/60)}時${String(min%60).padStart(2,"0")}分`;
 }
-function addTime(a,b){return toHHMM(toMin(a)+toMin(b));}
+function toggle(arr,val){return arr.includes(val)?arr.filter(x=>x!==val):[...arr,val];}
 
 const EMPTY={
   model:"亞拓 Align M3 任務無人機",serial:"C263001106",reg_no:"B-AAB14292",
@@ -42,7 +49,7 @@ const EMPTY={
   mission_date:"",drm_arrive:"",drm_leave:"",uav_takeoff:"",uav_land:"",
   prev_total:"",mission_hours:"",total_hours:"",
   prev_abnormal:"無",prev_abnormal_desc:"",
-  accident_causes:[],accident_results:[],accident_other:"",
+  accident_causes:[],accident_results:[],
   lng:"120.663627",lat:"24.182629",twd97_e:"215817.078",twd97_n:"2675245.488",
   admin_area:"臺中市西屯區",land_section:"鑫大鵬段",land_no:"3地號內",
   airspace_color:"",caa_approval:"",gov_approval:"",
@@ -57,8 +64,6 @@ const EMPTY={
     fc_before:"",fc_after:"",gps_before:"",gps_after:"",elec_before:"",elec_after:"",sys_before:"",sys_after:""},
   aircraft_ok:"",aerial_normal:false,aerial_abnormal:false,aerial_desc:"",
 };
-
-function toggle(arr,val){return arr.includes(val)?arr.filter(x=>x!==val):[...arr,val];}
 
 // ── UI 元件 ────────────────────────────────────────────────
 function Chk({checked,onChange,label,red}){
@@ -128,16 +133,17 @@ function CheckRow({label,bv,av,onChange}){
 // ── 主元件 ─────────────────────────────────────────────────
 export default function App(){
   const[f,setF]=useState(EMPTY);
+  const[editId,setEditId]=useState(null); // null=新增, uuid=編輯中
   const[tab,setTab]=useState("form");
   const[logs,setLogs]=useState([]);
   const[saving,setSaving]=useState(false);
+  const[deleting,setDeleting]=useState(null); // 確認刪除的id
   const[msg,setMsg]=useState(null);
   const[search,setSearch]=useState({pilot:"",dateFrom:"",dateTo:""});
-  // 智慧提示
-  const[pilotSuggestions,setPilotSuggestions]=useState([]);
-  const[obsSuggestions,setObsSuggestions]=useState([]);
-  const[showPilotDrop,setShowPilotDrop]=useState(false);
-  const[showObsDrop,setShowObsDrop]=useState(false);
+  const[pilotSugg,setPilotSugg]=useState([]);
+  const[obsSugg,setObsSugg]=useState([]);
+  const[showPDrop,setShowPDrop]=useState(false);
+  const[showODrop,setShowODrop]=useState(false);
 
   function upd(k,v){setF(p=>({...p,[k]:v}));}
   function updC(k,side,v){setF(p=>({...p,checks:{...p.checks,[`${k}_${side}`]:v}}));}
@@ -148,133 +154,142 @@ export default function App(){
   }
   useEffect(()=>{loadList();},[]);
 
-  // 從歷史紀錄提取操作員資料
+  // 建立操作員/觀察員建議清單
   useEffect(()=>{
-    const map={};
+    const pm={},om={};
     logs.forEach(l=>{
       try{
         const d=JSON.parse(l.data||"{}");
-        if(d.pilot_name&&!map[d.pilot_name]){
-          map[d.pilot_name]={cert_type:d.pilot_cert_type,cert_period:d.pilot_cert_period,cert_no:d.pilot_cert_no};
-        }
+        if(d.pilot_name&&!pm[d.pilot_name]) pm[d.pilot_name]={cert_type:d.pilot_cert_type,cert_period:d.pilot_cert_period,cert_no:d.pilot_cert_no};
+        if(d.obs_name&&!om[d.obs_name]) om[d.obs_name]={cert_type:d.obs_cert_type,cert_period:d.obs_cert_period,cert_no:d.obs_cert_no};
       }catch{}
     });
-    setPilotSuggestions(Object.entries(map).map(([name,info])=>({name,...info})));
-
-    const map2={};
-    logs.forEach(l=>{
-      try{
-        const d=JSON.parse(l.data||"{}");
-        if(d.obs_name&&!map2[d.obs_name]){
-          map2[d.obs_name]={cert_type:d.obs_cert_type,cert_period:d.obs_cert_period,cert_no:d.obs_cert_no};
-        }
-      }catch{}
-    });
-    setObsSuggestions(Object.entries(map2).map(([name,info])=>({name,...info})));
+    setPilotSugg(Object.entries(pm).map(([name,info])=>({name,...info})));
+    setObsSugg(Object.entries(om).map(([name,info])=>({name,...info})));
   },[logs]);
 
-  // 選擇操作員 → 自動填入資料 + 累積時數 + 無人機累積時數
   function selectPilot(p){
-    // 累積操作員時數
-    const pilotMin=logs.reduce((s,l)=>{
-      try{const d=JSON.parse(l.data||"{}");if(d.pilot_name===p.name)return s+toMin(d.mission_hours);}catch{}return s;
-    },0);
-    // 最新一筆同機累積時數
+    const min=logs.reduce((s,l)=>{try{const d=JSON.parse(l.data||"{}");if(d.pilot_name===p.name)return s+toMin(d.mission_hours);}catch{}return s;},0);
     const sameUAV=logs.find(l=>{try{const d=JSON.parse(l.data||"{}");return d.serial===f.serial;}catch{return false;}});
-    let prevTotal="";
-    if(sameUAV){try{const d=JSON.parse(sameUAV.data||"{}");prevTotal=d.total_hours||d.prev_total||"";}catch{}}
-    setF(prev=>({...prev,
-      pilot_name:p.name,pilot_cert_type:p.cert_type||"",
-      pilot_cert_period:p.cert_period||"",pilot_cert_no:p.cert_no||"",
-      prev_total:prevTotal,
-      _pilot_accumulated:toHHMM(pilotMin),
-    }));
-    setShowPilotDrop(false);
+    let pt="";if(sameUAV){try{const d=JSON.parse(sameUAV.data||"{}");pt=d.total_hours||d.prev_total||"";}catch{}}
+    setF(prev=>({...prev,pilot_name:p.name,pilot_cert_type:p.cert_type||"",pilot_cert_period:p.cert_period||"",pilot_cert_no:p.cert_no||"",prev_total:pt,_pilot_acc:toHHMM(min)}));
+    setShowPDrop(false);
   }
-
   function selectObs(o){
     setF(prev=>({...prev,obs_name:o.name,obs_cert_type:o.cert_type||"",obs_cert_period:o.cert_period||"",obs_cert_no:o.cert_no||""}));
-    setShowObsDrop(false);
+    setShowODrop(false);
   }
-
-  // 切換無人機序號時自動抓累積時數
   function changeSerial(v){
     upd("serial",v);
-    const sameUAV=logs.find(l=>{try{const d=JSON.parse(l.data||"{}");return d.serial===v;}catch{return false;}});
-    if(sameUAV){
-      try{const d=JSON.parse(sameUAV.data||"{}");upd("prev_total",d.total_hours||d.prev_total||"");}catch{}
-    }
+    const hit=logs.find(l=>{try{const d=JSON.parse(l.data||"{}");return d.serial===v;}catch{return false;}});
+    if(hit){try{const d=JSON.parse(hit.data||"{}");upd("prev_total",d.total_hours||d.prev_total||"");}catch{}}
   }
-
-  // 本次任務時數填完後自動計算累積
   useEffect(()=>{
-    if(f.prev_total&&f.mission_hours){
-      const total=toHHMM(toMin(f.prev_total)+toMin(f.mission_hours));
-      setF(p=>({...p,total_hours:total}));
-    }
+    if(f.prev_total&&f.mission_hours) setF(p=>({...p,total_hours:toHHMM(toMin(f.prev_total)+toMin(f.mission_hours))}));
   },[f.prev_total,f.mission_hours]);
 
+  // 新增 / 更新
   async function save(){
     setSaving(true);
     try{
       const payload={data:JSON.stringify(f),mission_date:f.mission_date||null,pilot_name:f.pilot_name,serial:f.serial};
-      await sbInsert(payload);
-      flash("✅ 儲存成功！");
+      if(editId){
+        await sbUpdate(editId,payload);
+        flash("✅ 更新成功！");
+      }else{
+        await sbInsert(payload);
+        flash("✅ 儲存成功！");
+      }
       await loadList();
-    }catch(e){flash("❌ 儲存失敗："+e.message,false);}
+    }catch(e){flash("❌ 失敗："+e.message,false);}
     finally{setSaving(false);}
   }
 
-  // ── 篩選 ──
+  // 載入紀錄進表單進行編輯
+  function startEdit(log){
+    let d={};try{d=JSON.parse(log.data||"{}");}catch{}
+    setF({...EMPTY,...d,checks:{...EMPTY.checks,...(d.checks||{})}});
+    setEditId(log.id);
+    setTab("form");
+    window.scrollTo({top:0,behavior:"smooth"});
+    flash("📝 已載入紀錄，修改後請按「更新」",true);
+  }
+
+  function newForm(){
+    setF(EMPTY);
+    setEditId(null);
+    setTab("form");
+    window.scrollTo({top:0,behavior:"smooth"});
+  }
+
+  // 刪除
+  async function confirmDelete(id){
+    try{
+      await sbDelete(id);
+      flash("🗑 紀錄已刪除");
+      setDeleting(null);
+      await loadList();
+    }catch(e){flash("❌ 刪除失敗："+e.message,false);}
+  }
+
+  // 篩選
   const filtered=logs.filter(l=>{
     const d=l.mission_date||"";
-    return (l.pilot_name||"").includes(search.pilot)
-      &&(!search.dateFrom||d>=search.dateFrom)
-      &&(!search.dateTo||d<=search.dateTo);
+    return (l.pilot_name||"").includes(search.pilot)&&(!search.dateFrom||d>=search.dateFrom)&&(!search.dateTo||d<=search.dateTo);
   });
   const totalMin=filtered.reduce((s,l)=>{try{const d=JSON.parse(l.data||"{}");return s+toMin(d.mission_hours);}catch{return s;}},0);
-  const pilots={};
+  const pilots={},uavs={};
   filtered.forEach(l=>{
-    const name=l.pilot_name||"未知";
-    try{const d=JSON.parse(l.data||"{}");pilots[name]=(pilots[name]||0)+toMin(d.mission_hours);}catch{}
-  });
-  const uavs={};
-  filtered.forEach(l=>{
-    const sn=l.serial||"未知";
-    try{const d=JSON.parse(l.data||"{}");uavs[sn]=(uavs[sn]||0)+toMin(d.mission_hours);}catch{}
+    const n=l.pilot_name||"未知",sn=l.serial||"未知";
+    try{const d=JSON.parse(l.data||"{}");pilots[n]=(pilots[n]||0)+toMin(d.mission_hours);uavs[sn]=(uavs[sn]||0)+toMin(d.mission_hours);}catch{}
   });
 
-  // ── 列印預覽 ──
   if(tab==="preview") return(
     <div>
-      <div className="no-print" style={{position:"fixed",top:0,left:0,right:0,background:"#1a3251",padding:"10px 16px",display:"flex",gap:10,zIndex:999}}>
+      <div className="no-print" style={{position:"fixed",top:0,left:0,right:0,background:"#1a3251",padding:"10px 16px",display:"flex",gap:10,zIndex:999,flexWrap:"wrap"}}>
         <button onClick={()=>window.print()} style={btnB}>🖨 列印/存PDF</button>
+        {editId&&<button onClick={()=>setTab("form")} style={btnY}>✏️ 繼續編輯</button>}
         <button onClick={()=>setTab("form")} style={btnG}>← 返回</button>
       </div>
-      <div style={{marginTop:56}}>
-        <PrintForm f={f}/>
-      </div>
+      <div style={{marginTop:56}}><PrintForm f={f}/></div>
     </div>
   );
 
   const navBtn=(t,icon,label)=>(
     <button onClick={()=>{setTab(t);if(t==="history")loadList();}}
-      style={{flex:1,padding:"10px 4px",border:"none",background:tab===t?"#38b6ff":"#1a3251",
-        color:"#fff",fontSize:12,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+      style={{flex:1,padding:"10px 4px",border:"none",background:tab===t?"#38b6ff":"#1a3251",color:"#fff",fontSize:12,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
       <span style={{fontSize:18}}>{icon}</span>{label}
     </button>
   );
 
   return(
     <div style={{fontFamily:"sans-serif",background:"#f0f4f8",minHeight:"100vh",paddingBottom:80}}>
-      <div style={{background:"#1a3251",color:"#fff",padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{fontSize:15,fontWeight:700}}>✈ 無人機飛航日誌</div>
-        <div style={{display:"flex",gap:8}}>
-          <button onClick={save} disabled={saving} style={btnB}>{saving?"儲存中…":"💾 儲存"}</button>
+
+      {/* 頂部 */}
+      <div style={{background:"#1a3251",color:"#fff",padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <div>
+          <div style={{fontSize:15,fontWeight:700}}>✈ 無人機飛航日誌</div>
+          {editId&&<div style={{fontSize:11,color:"#f39c12",marginTop:2}}>✏️ 編輯模式：{f.mission_date||"（未填日期）"} {f.pilot_name}</div>}
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {editId&&<button onClick={newForm} style={btnW}>＋ 新增</button>}
+          <button onClick={save} disabled={saving} style={editId?btnY:btnB}>{saving?"處理中…":editId?"💾 更新":"💾 儲存"}</button>
           <button onClick={()=>setTab("preview")} style={btnG}>👁 列印</button>
         </div>
       </div>
-      {msg&&<div style={{background:msg.ok?"#d4edda":"#f8d7da",color:msg.ok?"#155724":"#721c24",padding:"10px 14px",fontSize:13}}>{msg.text}</div>}
+
+      {/* 訊息 */}
+      {msg&&<div style={{background:msg.ok?"#d4edda":"#f8d7da",color:msg.ok?"#155724":"#721c24",padding:"10px 14px",fontSize:13,fontWeight:600}}>{msg.text}</div>}
+
+      {/* 編輯模式提示列 */}
+      {editId&&tab==="form"&&(
+        <div style={{background:"#fff8e1",borderLeft:"4px solid #f39c12",padding:"8px 14px",fontSize:13,color:"#856404",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span>✏️ 編輯模式｜修改完成後按「更新」</span>
+          <button onClick={newForm} style={{background:"none",border:"1px solid #856404",color:"#856404",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:12}}>取消編輯</button>
+        </div>
+      )}
+
+      {/* 底部導覽 */}
       <div style={{position:"fixed",bottom:0,left:0,right:0,display:"flex",background:"#1a3251",zIndex:999,borderTop:"2px solid #38b6ff"}}>
         {navBtn("form","📝","填寫")}
         {navBtn("stats","📊","統計")}
@@ -284,7 +299,6 @@ export default function App(){
       {/* ══ 填寫表單 ══ */}
       {tab==="form"&&(
         <div style={{padding:12,maxWidth:640,margin:"0 auto"}}>
-
           <Section title="基本資料" color="#1a3251" icon="📋">
             <Field label="型式" value={f.model} onChange={v=>upd("model",v)}/>
             <Field label="序號" value={f.serial} onChange={changeSerial}/>
@@ -304,13 +318,13 @@ export default function App(){
               <Field label="無人機起飛時間" value={f.uav_takeoff} onChange={v=>upd("uav_takeoff",v)} placeholder="HH:MM"/>
               <Field label="無人機降落時間" value={f.uav_land} onChange={v=>upd("uav_land",v)} placeholder="HH:MM"/>
             </div>
-            <div style={{background:"#fff8e1",border:"1px solid #ffc",borderRadius:8,padding:10,marginBottom:10}}>
+            <div style={{background:"#fff8e1",border:"1px solid #ffc107",borderRadius:8,padding:10,marginBottom:10}}>
               <div style={{fontSize:12,color:"#b8860b",fontWeight:700,marginBottom:6}}>⏱ 飛行時數（自動計算）</div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                <Field label="本機前次累計時數" value={f.prev_total} onChange={v=>upd("prev_total",v)} placeholder="HH:MM" highlight={!!f.prev_total}/>
-                <Field label="本次任務飛行時數" value={f.mission_hours} onChange={v=>upd("mission_hours",v)} placeholder="HH:MM"/>
+                <Field label="前次累計時數" value={f.prev_total} onChange={v=>upd("prev_total",v)} placeholder="HH:MM" highlight={!!f.prev_total}/>
+                <Field label="本次任務時數" value={f.mission_hours} onChange={v=>upd("mission_hours",v)} placeholder="HH:MM"/>
               </div>
-              <Field label="目前累計飛行時數（自動）" value={f.total_hours} onChange={v=>upd("total_hours",v)} placeholder="自動計算" readOnly={!!(f.prev_total&&f.mission_hours)} highlight={!!(f.prev_total&&f.mission_hours)}/>
+              <Field label="目前累計時數（自動）" value={f.total_hours} onChange={v=>upd("total_hours",v)} readOnly={!!(f.prev_total&&f.mission_hours)} highlight={!!(f.prev_total&&f.mission_hours)}/>
             </div>
             <div style={{marginBottom:8}}>
               <div style={{fontSize:12,color:"#666",marginBottom:4}}>本機前次日誌有無異常紀錄</div>
@@ -365,21 +379,17 @@ export default function App(){
             </div>
           </Section>
 
-          {/* 人員 — 智慧自動填入 */}
           <Section title="任務執行人員" color="#2471a3" icon="👤">
             <div style={{background:"#e8f4fd",borderRadius:8,padding:10,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:13,color:"#1a3251",marginBottom:8}}>操作員</div>
-              {/* 操作員姓名下拉 */}
               <div style={{position:"relative",marginBottom:10}}>
                 <div style={{fontSize:12,color:"#666",marginBottom:3}}>姓名（點選歷史自動填入）</div>
-                <input value={f.pilot_name} onChange={e=>{upd("pilot_name",e.target.value);setShowPilotDrop(true);}}
-                  onFocus={()=>setShowPilotDrop(true)}
+                <input value={f.pilot_name} onChange={e=>{upd("pilot_name",e.target.value);setShowPDrop(true);}} onFocus={()=>setShowPDrop(true)}
                   style={{width:"100%",border:"1px solid #ddd",borderRadius:6,padding:"8px 10px",fontSize:14,boxSizing:"border-box",background:"#fff"}}/>
-                {showPilotDrop&&pilotSuggestions.filter(p=>p.name.includes(f.pilot_name)).length>0&&(
+                {showPDrop&&pilotSugg.filter(p=>p.name.includes(f.pilot_name)).length>0&&(
                   <div style={{position:"absolute",top:"100%",left:0,right:0,background:"#fff",border:"1px solid #ddd",borderRadius:6,zIndex:99,boxShadow:"0 4px 12px rgba(0,0,0,0.15)"}}>
-                    {pilotSuggestions.filter(p=>p.name.includes(f.pilot_name)).map(p=>(
-                      <div key={p.name} onClick={()=>selectPilot(p)}
-                        style={{padding:"10px 12px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:13}}>
+                    {pilotSugg.filter(p=>p.name.includes(f.pilot_name)).map(p=>(
+                      <div key={p.name} onClick={()=>selectPilot(p)} style={{padding:"10px 12px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:13}}>
                         <div style={{fontWeight:700}}>{p.name}</div>
                         <div style={{fontSize:11,color:"#888"}}>{p.cert_type} | {p.cert_no}</div>
                       </div>
@@ -387,11 +397,7 @@ export default function App(){
                   </div>
                 )}
               </div>
-              {f._pilot_accumulated&&(
-                <div style={{background:"#1a3251",color:"#38b6ff",borderRadius:6,padding:"6px 10px",fontSize:13,marginBottom:8,fontWeight:700}}>
-                  ⏱ {f.pilot_name} 歷史累積操作時數：{f._pilot_accumulated}
-                </div>
-              )}
+              {f._pilot_acc&&<div style={{background:"#1a3251",color:"#38b6ff",borderRadius:6,padding:"6px 10px",fontSize:13,marginBottom:8,fontWeight:700}}>⏱ 歷史累積：{f._pilot_acc}</div>}
               <Field label="操作證類別" value={f.pilot_cert_type} onChange={v=>upd("pilot_cert_type",v)} highlight={!!f.pilot_cert_type}/>
               <Field label="操作證效期" value={f.pilot_cert_period} onChange={v=>upd("pilot_cert_period",v)} highlight={!!f.pilot_cert_period}/>
               <Field label="操作證編號" value={f.pilot_cert_no} onChange={v=>upd("pilot_cert_no",v)} highlight={!!f.pilot_cert_no}/>
@@ -400,14 +406,12 @@ export default function App(){
               <div style={{fontWeight:700,fontSize:13,color:"#1a5c2e",marginBottom:8}}>觀察員</div>
               <div style={{position:"relative",marginBottom:10}}>
                 <div style={{fontSize:12,color:"#666",marginBottom:3}}>姓名（點選歷史自動填入）</div>
-                <input value={f.obs_name} onChange={e=>{upd("obs_name",e.target.value);setShowObsDrop(true);}}
-                  onFocus={()=>setShowObsDrop(true)}
+                <input value={f.obs_name} onChange={e=>{upd("obs_name",e.target.value);setShowODrop(true);}} onFocus={()=>setShowODrop(true)}
                   style={{width:"100%",border:"1px solid #ddd",borderRadius:6,padding:"8px 10px",fontSize:14,boxSizing:"border-box",background:"#fff"}}/>
-                {showObsDrop&&obsSuggestions.filter(o=>o.name.includes(f.obs_name)).length>0&&(
+                {showODrop&&obsSugg.filter(o=>o.name.includes(f.obs_name)).length>0&&(
                   <div style={{position:"absolute",top:"100%",left:0,right:0,background:"#fff",border:"1px solid #ddd",borderRadius:6,zIndex:99,boxShadow:"0 4px 12px rgba(0,0,0,0.15)"}}>
-                    {obsSuggestions.filter(o=>o.name.includes(f.obs_name)).map(o=>(
-                      <div key={o.name} onClick={()=>selectObs(o)}
-                        style={{padding:"10px 12px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:13}}>
+                    {obsSugg.filter(o=>o.name.includes(f.obs_name)).map(o=>(
+                      <div key={o.name} onClick={()=>selectObs(o)} style={{padding:"10px 12px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:13}}>
                         <div style={{fontWeight:700}}>{o.name}</div>
                         <div style={{fontSize:11,color:"#888"}}>{o.cert_type} | {o.cert_no}</div>
                       </div>
@@ -498,7 +502,7 @@ export default function App(){
           </Section>
 
           <div style={{display:"flex",gap:10,paddingBottom:20}}>
-            <button onClick={save} disabled={saving} style={{...btnB,flex:1,padding:14,fontSize:15}}>{saving?"儲存中…":"💾 儲存紀錄"}</button>
+            <button onClick={save} disabled={saving} style={{...( editId?btnY:btnB),flex:1,padding:14,fontSize:15}}>{saving?"處理中…":editId?"💾 更新紀錄":"💾 儲存紀錄"}</button>
             <button onClick={()=>setTab("preview")} style={{...btnG,flex:1,padding:14,fontSize:15}}>👁 預覽列印</button>
           </div>
         </div>
@@ -558,22 +562,40 @@ export default function App(){
             </div>
           </div>
           <div style={{fontSize:13,color:"#666",marginBottom:8}}>共 {filtered.length} 筆紀錄</div>
+
           {filtered.length===0?(
             <div style={{textAlign:"center",padding:40,color:"#aaa"}}>查無紀錄</div>
           ):filtered.map((l,i)=>{
             let d={};try{d=JSON.parse(l.data||"{}");}catch{}
+            const isDeleting=deleting===l.id;
             return(
-              <div key={i} style={{background:"#fff",borderRadius:10,padding:14,marginBottom:10,boxShadow:"0 1px 4px rgba(0,0,0,.1)",cursor:"pointer"}}
-                onClick={()=>{setF({...EMPTY,...d,checks:{...EMPTY.checks,...(d.checks||{})}});setTab("preview");}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontWeight:700,fontSize:15,color:"#1a3251"}}>{l.mission_date||"（未填日期）"}</div>
-                    <div style={{fontSize:13,color:"#555",marginTop:3}}>👤 操作員：{l.pilot_name||"—"}</div>
-                    <div style={{fontSize:13,color:"#c0392b",fontWeight:600}}>⏱ 本次：{d.mission_hours||"—"}　累計：{d.total_hours||"—"}</div>
-                    <div style={{fontSize:12,color:"#888",marginTop:2}}>{d.mission_types?.join("、")||""}</div>
-                  </div>
-                  <div style={{background:"#38b6ff",color:"#fff",borderRadius:6,padding:"6px 12px",fontSize:12,flexShrink:0,fontWeight:700}}>查看 →</div>
+              <div key={l.id||i} style={{background:"#fff",borderRadius:10,padding:14,marginBottom:10,boxShadow:"0 1px 4px rgba(0,0,0,.1)"}}>
+                {/* 內容列 */}
+                <div style={{marginBottom:10}}>
+                  <div style={{fontWeight:700,fontSize:15,color:"#1a3251"}}>{l.mission_date||"（未填日期）"}</div>
+                  <div style={{fontSize:13,color:"#555",marginTop:3}}>👤 {l.pilot_name||"—"}</div>
+                  <div style={{fontSize:13,color:"#c0392b",fontWeight:600}}>⏱ 本次：{d.mission_hours||"—"}　累計：{d.total_hours||"—"}</div>
+                  <div style={{fontSize:12,color:"#888",marginTop:2}}>{d.mission_types?.join("、")||""}</div>
                 </div>
+                {/* 操作按鈕 */}
+                {!isDeleting?(
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>{setF({...EMPTY,...d,checks:{...EMPTY.checks,...(d.checks||{})}});setTab("preview");}}
+                      style={{...btnB,flex:1,fontSize:13,padding:"8px 0"}}>👁 查看</button>
+                    <button onClick={()=>startEdit(l)}
+                      style={{...btnY,flex:1,fontSize:13,padding:"8px 0"}}>✏️ 編輯</button>
+                    <button onClick={()=>setDeleting(l.id)}
+                      style={{...btnR,flex:1,fontSize:13,padding:"8px 0"}}>🗑 刪除</button>
+                  </div>
+                ):(
+                  <div style={{background:"#fff3cd",border:"1px solid #ffc107",borderRadius:8,padding:10}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#856404",marginBottom:8}}>⚠️ 確認刪除此筆紀錄？此操作無法復原！</div>
+                    <div style={{display:"flex",gap:8}}>
+                      <button onClick={()=>confirmDelete(l.id)} style={{...btnR,flex:1,padding:"8px 0",fontSize:13}}>✅ 確認刪除</button>
+                      <button onClick={()=>setDeleting(null)} style={{...btnW,flex:1,padding:"8px 0",fontSize:13,border:"1px solid #ccc"}}>❌ 取消</button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -595,234 +617,38 @@ function StatCard({icon,label,value,color}){
 
 // ── 彩色列印版 ──────────────────────────────────────────────
 function PrintForm({f}){
-  const colors={
-    navy:"#1a3251",red:"#c0392b",green:"#6a994e",purple:"#8e44ad",
-    orange:"#e67e22",blue:"#2980b9",teal:"#16a085",gray:"#7f8c8d",
-  };
-  function SecHeader({title,color,icon}){
-    return(
-      <div style={{background:color,color:"#fff",fontWeight:700,fontSize:13,padding:"6px 12px",marginTop:10,marginBottom:0,borderRadius:"6px 6px 0 0",display:"flex",alignItems:"center",gap:6}}>
-        {icon} {title}
-      </div>
-    );
-  }
-  function Box({children,color}){
-    return(
-      <div style={{border:`2px solid ${color}`,borderRadius:"0 0 6px 6px",padding:10,marginBottom:10,background:"#fff"}}>
-        {children}
-      </div>
-    );
-  }
-  function Row({label,value,labelColor}){
-    return(
-      <div style={{display:"flex",gap:6,marginBottom:4,alignItems:"flex-start"}}>
-        <span style={{fontSize:12,color:labelColor||"#555",minWidth:90,flexShrink:0,fontWeight:600}}>{label}</span>
-        <span style={{fontSize:13,color:"#000",flex:1,borderBottom:"1px solid #eee",paddingBottom:2}}>{value||"—"}</span>
-      </div>
-    );
-  }
-  function Grid2({children}){return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>{children}</div>;}
-  function ChkDisp({checked,label,danger}){
-    return(
-      <span style={{display:"inline-flex",alignItems:"center",gap:3,marginRight:10,marginBottom:3,fontSize:12,color:danger&&checked?"#c00":"#333"}}>
-        <span style={{width:14,height:14,border:"1px solid #999",borderRadius:2,background:checked?"#1a3251":"#fff",display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:10,flexShrink:0}}>
-          {checked?"✓":""}
-        </span>
-        {label}
-      </span>
-    );
-  }
-  function CheckDisp({val}){
-    return(
-      <span style={{display:"inline-flex",alignItems:"center",gap:3,marginRight:6,fontSize:12}}>
-        <span style={{width:12,height:12,border:"1px solid #999",borderRadius:2,background:val==="是"?"#2ecc71":val==="否"?"#e74c3c":"#fff",display:"inline-block"}}/>
-        {val||"—"}
-      </span>
-    );
-  }
-
+  const C={navy:"#1a3251",red:"#c0392b",green:"#6a994e",purple:"#8e44ad",orange:"#e67e22",blue:"#2980b9",teal:"#16a085",gray:"#7f8c8d"};
+  function SH({title,color,icon}){return(<div style={{background:color,color:"#fff",fontWeight:700,fontSize:13,padding:"6px 12px",marginTop:10,marginBottom:0,borderRadius:"6px 6px 0 0",display:"flex",alignItems:"center",gap:6}}>{icon} {title}</div>);}
+  function Box({children,color}){return(<div style={{border:`2px solid ${color}`,borderRadius:"0 0 6px 6px",padding:10,marginBottom:10,background:"#fff"}}>{children}</div>);}
+  function Row({label,value,lc}){return(<div style={{display:"flex",gap:6,marginBottom:4,alignItems:"flex-start"}}><span style={{fontSize:12,color:lc||"#555",minWidth:90,flexShrink:0,fontWeight:600}}>{label}</span><span style={{fontSize:13,color:"#000",flex:1,borderBottom:"1px solid #eee",paddingBottom:2}}>{value||"—"}</span></div>);}
+  function G2({children}){return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>{children}</div>;}
+  function CD({checked,label,danger}){return(<span style={{display:"inline-flex",alignItems:"center",gap:3,marginRight:10,marginBottom:3,fontSize:12,color:danger&&checked?"#c00":"#333"}}><span style={{width:14,height:14,border:"1px solid #999",borderRadius:2,background:checked?"#1a3251":"#fff",display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:10,flexShrink:0}}>{checked?"✓":""}</span>{label}</span>);}
   return(
-    <div style={{fontFamily:"'Microsoft JhengHei',sans-serif",color:"#000",padding:16,maxWidth:800,margin:"0 auto",background:"#f8f9fa",minHeight:"100vh"}}>
-      <style>{`@media print{.no-print{display:none!important} body{background:#fff} * {-webkit-print-color-adjust:exact!important; print-color-adjust:exact!important;}}`}</style>
-      {/* 標題 */}
+    <div style={{fontFamily:"'Microsoft JhengHei',sans-serif",color:"#000",padding:16,maxWidth:800,margin:"0 auto",background:"#f8f9fa"}}>
+      <style>{`@media print{.no-print{display:none!important} body{background:#fff} *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}`}</style>
       <div style={{background:"linear-gradient(135deg,#1a3251,#2980b9)",color:"#fff",borderRadius:10,padding:"16px 20px",marginBottom:14,textAlign:"center",boxShadow:"0 3px 10px rgba(0,0,0,0.2)"}}>
         <h2 style={{margin:0,fontSize:20,letterSpacing:4}}>遙控無人多旋翼機飛航日誌</h2>
         <div style={{fontSize:12,opacity:.8,marginTop:4}}>編號：115-M3SE-0001　附表7　列印時間：{new Date().toLocaleString("zh-TW")}</div>
       </div>
-
-      {/* 基本資料 */}
-      <SecHeader title="基本資料" color={colors.navy} icon="📋"/>
-      <Box color={colors.navy}>
-        <Grid2>
-          <Row label="型式" value={f.model} labelColor={colors.navy}/>
-          <Row label="序號" value={f.serial} labelColor={colors.navy}/>
-          <Row label="註冊號碼" value={f.reg_no} labelColor={colors.navy}/>
-          <Row label="有效期限" value={f.valid_until} labelColor={colors.navy}/>
-          <Row label="保險公司" value={f.insurer} labelColor={colors.navy}/>
-          <Row label="電話" value={f.insurer_tel} labelColor={colors.navy}/>
-          <Row label="保單編號" value={f.policy_no} labelColor={colors.navy}/>
-          <Row label="保險期限" value={f.insurance_until} labelColor={colors.navy}/>
-        </Grid2>
-      </Box>
-
-      {/* 飛航時間 */}
-      <SecHeader title="飛航時間與飛安事故相關紀錄" color={colors.red} icon="🕐"/>
-      <Box color={colors.red}>
-        <Grid2>
-          <Row label="任務日期" value={f.mission_date} labelColor={colors.red}/>
-          <Row label="DM 報到" value={f.drm_arrive} labelColor={colors.red}/>
-          <Row label="DM 離場" value={f.drm_leave} labelColor={colors.red}/>
-          <Row label="起飛時間" value={f.uav_takeoff} labelColor={colors.red}/>
-          <Row label="降落時間" value={f.uav_land} labelColor={colors.red}/>
-          <Row label="前次累計" value={f.prev_total} labelColor={colors.red}/>
-          <Row label="本次時數" value={f.mission_hours} labelColor={colors.red}/>
-          <Row label="目前累計" value={f.total_hours} labelColor={colors.red}/>
-        </Grid2>
-        <Row label="前次異常" value={`${f.prev_abnormal} ${f.prev_abnormal_desc}`} labelColor={colors.red}/>
-        <div style={{fontSize:12,color:"#666",marginBottom:3,fontWeight:600}}>事故原因</div>
-        <div style={{marginBottom:6}}>{["機械問題墜落","電池問題墜落","天候問題墜落","操作問題墜落","其它問題墜落"].map(c=><ChkDisp key={c} checked={f.accident_causes.includes(c)} label={c}/>)}</div>
-        <div style={{fontSize:12,color:"#666",marginBottom:3,fontWeight:600}}>墜落後造成</div>
-        <div>{["機體損毀(未遺失)","機體遺落失蹤","第三人財損","第三人死、傷","其它情形"].map(c=><ChkDisp key={c} checked={f.accident_results.includes(c)} label={c} danger/>)}</div>
-      </Box>
-
-      {/* 空間位置 */}
-      <SecHeader title="空間位置及座標相關紀錄" color={colors.green} icon="📍"/>
-      <Box color={colors.green}>
-        <Grid2>
-          <Row label="經度" value={f.lng} labelColor={colors.green}/>
-          <Row label="緯度" value={f.lat} labelColor={colors.green}/>
-          <Row label="TWD97 E" value={f.twd97_e} labelColor={colors.green}/>
-          <Row label="TWD97 N" value={f.twd97_n} labelColor={colors.green}/>
-          <Row label="行政區" value={f.admin_area} labelColor={colors.green}/>
-          <Row label="地段" value={f.land_section} labelColor={colors.green}/>
-        </Grid2>
-        <Row label="地號" value={f.land_no} labelColor={colors.green}/>
-      </Box>
-
-      {/* 空域 & 任務屬性 並排 */}
+      <SH title="基本資料" color={C.navy} icon="📋"/><Box color={C.navy}><G2><Row label="型式" value={f.model} lc={C.navy}/><Row label="序號" value={f.serial} lc={C.navy}/><Row label="註冊號碼" value={f.reg_no} lc={C.navy}/><Row label="有效期限" value={f.valid_until} lc={C.navy}/><Row label="保險公司" value={f.insurer} lc={C.navy}/><Row label="電話" value={f.insurer_tel} lc={C.navy}/><Row label="保單編號" value={f.policy_no} lc={C.navy}/><Row label="保險期限" value={f.insurance_until} lc={C.navy}/></G2></Box>
+      <SH title="飛航時間與飛安事故" color={C.red} icon="🕐"/><Box color={C.red}><G2><Row label="任務日期" value={f.mission_date} lc={C.red}/><Row label="DM報到" value={f.drm_arrive} lc={C.red}/><Row label="DM離場" value={f.drm_leave} lc={C.red}/><Row label="起飛時間" value={f.uav_takeoff} lc={C.red}/><Row label="降落時間" value={f.uav_land} lc={C.red}/><Row label="前次累計" value={f.prev_total} lc={C.red}/><Row label="本次時數" value={f.mission_hours} lc={C.red}/><Row label="目前累計" value={f.total_hours} lc={C.red}/></G2><Row label="前次異常" value={`${f.prev_abnormal} ${f.prev_abnormal_desc}`} lc={C.red}/><div style={{fontSize:12,color:"#666",marginBottom:3,fontWeight:600}}>事故原因</div><div style={{marginBottom:6}}>{["機械問題墜落","電池問題墜落","天候問題墜落","操作問題墜落","其它問題墜落"].map(c=><CD key={c} checked={f.accident_causes?.includes(c)} label={c}/>)}</div><div style={{fontSize:12,color:"#666",marginBottom:3,fontWeight:600}}>墜落後造成</div><div>{["機體損毀(未遺失)","機體遺落失蹤","第三人財損","第三人死、傷","其它情形"].map(c=><CD key={c} checked={f.accident_results?.includes(c)} label={c} danger/>)}</div></Box>
+      <SH title="空間位置及座標" color={C.green} icon="📍"/><Box color={C.green}><G2><Row label="經度" value={f.lng} lc={C.green}/><Row label="緯度" value={f.lat} lc={C.green}/><Row label="TWD97 E" value={f.twd97_e} lc={C.green}/><Row label="TWD97 N" value={f.twd97_n} lc={C.green}/><Row label="行政區" value={f.admin_area} lc={C.green}/><Row label="地段" value={f.land_section} lc={C.green}/></G2><Row label="地號" value={f.land_no} lc={C.green}/></Box>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-        <div>
-          <SecHeader title="空域" color={colors.purple} icon="🛡"/>
-          <Box color={colors.purple}>
-            <div style={{marginBottom:6}}>{["綠色（120M以下）","黃色（60M或解禁）","紅色（法人解禁）"].map((c,i)=><div key={i}><ChkDisp checked={f.airspace_color===c} label={c}/></div>)}</div>
-            <Row label="民航局" value={f.caa_approval} labelColor={colors.purple}/>
-            <Row label="地方政府" value={f.gov_approval} labelColor={colors.purple}/>
-          </Box>
-        </div>
-        <div>
-          <SecHeader title="任務屬性" color={colors.orange} icon="🎯"/>
-          <Box color={colors.orange}>
-            <div style={{marginBottom:6}}>{["定期巡查","專案飛航","災害巡檢","臨時交辦","訓練飛行"].map((c,i)=>{
-              const full=["定期空置營區巡查","專案任務飛航","天然災害後飛航巡檢","臨時交辦任務","訓練飛行"][i];
-              return<div key={i}><ChkDisp checked={f.mission_types.includes(full)} label={c}/></div>;
-            })}</div>
-            <Row label="指派人" value={`${f.mission_dispatcher_rank} ${f.mission_dispatcher_name}`} labelColor={colors.orange}/>
-          </Box>
-        </div>
+        <div><SH title="空域" color={C.purple} icon="🛡"/><Box color={C.purple}><div style={{marginBottom:6}}>{["綠色（120M以下）","黃色（60M或解禁）","紅色（法人解禁）"].map((c,i)=><div key={i}><CD checked={f.airspace_color===c} label={c}/></div>)}</div><Row label="民航局" value={f.caa_approval} lc={C.purple}/><Row label="地方政府" value={f.gov_approval} lc={C.purple}/></Box></div>
+        <div><SH title="任務屬性" color={C.orange} icon="🎯"/><Box color={C.orange}><div style={{marginBottom:6}}>{["定期巡查","專案飛航","災害巡檢","臨時交辦","訓練飛行"].map((c,i)=>{const full=["定期空置營區巡查","專案任務飛航","天然災害後飛航巡檢","臨時交辦任務","訓練飛行"][i];return<div key={i}><CD checked={f.mission_types?.includes(full)} label={c}/></div>;})}</div><Row label="指派人" value={`${f.mission_dispatcher_rank} ${f.mission_dispatcher_name}`} lc={C.orange}/></Box></div>
       </div>
-
-      {/* 人員 */}
-      <SecHeader title="任務執行人員資料" color={colors.blue} icon="👤"/>
-      <Box color={colors.blue}>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-          <div style={{background:"#e8f4fd",borderRadius:6,padding:8}}>
-            <div style={{fontWeight:700,fontSize:12,color:colors.blue,marginBottom:6}}>操作員</div>
-            <Row label="姓名" value={f.pilot_name} labelColor={colors.blue}/>
-            <Row label="證別" value={f.pilot_cert_type} labelColor={colors.blue}/>
-            <Row label="效期" value={f.pilot_cert_period} labelColor={colors.blue}/>
-            <Row label="編號" value={f.pilot_cert_no} labelColor={colors.blue}/>
-            <div style={{fontSize:11,color:"#888",marginTop:6}}>簽名：＿＿＿＿＿＿</div>
-          </div>
-          <div style={{background:"#f0fff4",borderRadius:6,padding:8}}>
-            <div style={{fontWeight:700,fontSize:12,color:colors.green,marginBottom:6}}>觀察員</div>
-            <Row label="姓名" value={f.obs_name} labelColor={colors.green}/>
-            <Row label="證別" value={f.obs_cert_type} labelColor={colors.green}/>
-            <Row label="效期" value={f.obs_cert_period} labelColor={colors.green}/>
-            <Row label="編號" value={f.obs_cert_no} labelColor={colors.green}/>
-            <div style={{fontSize:11,color:"#888",marginTop:6}}>簽名：＿＿＿＿＿＿</div>
-          </div>
-        </div>
-      </Box>
-
-      {/* 氣象 */}
-      <SecHeader title="氣象相關資料紀錄" color={colors.blue} icon="🌤"/>
-      <Box color={colors.blue}>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:colors.blue,marginBottom:4}}>中央氣象署</div>
-            <div style={{marginBottom:4}}>{["晴天","多雲","陰天","雨天","其它"].map(w=><ChkDisp key={w} checked={f.weather_cwa.includes(w)} label={w}/>)}</div>
-            <Row label="日出/落" value={`${f.sunrise} / ${f.sunset}`} labelColor={colors.blue}/>
-            <Row label="風速/等級" value={`${f.avg_wind}m/s　${f.wind_level}級`} labelColor={colors.blue}/>
-            <Row label="能見度" value={`${f.visibility}km`} labelColor={colors.blue}/>
-            <Row label="氣溫" value={f.temp} labelColor={colors.blue}/>
-            <div style={{fontSize:11,color:"#666",marginTop:4}}>{f.wind_dir.join(" ")}</div>
-          </div>
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:colors.teal,marginBottom:4}}>任務地點</div>
-            <div style={{marginBottom:4}}>{["晴天","多雲","陰天","雨天(禁飛)","日出前日落後(禁飛)"].map(w=><ChkDisp key={w} checked={f.site_weather.includes(w)} label={w} danger={w.includes("禁飛")}/>)}</div>
-            <Row label="現場風速" value={f.site_wind} labelColor={colors.teal}/>
-            <Row label="現場氣溫" value={f.site_temp} labelColor={colors.teal}/>
-            <div style={{marginTop:8,background:f.weather_ok==="同意飛行"?"#d4edda":"f.weather_ok"==="禁止飛行"?"#f8d7da":"#f0f0f0",borderRadius:6,padding:"6px 10px",fontSize:13,fontWeight:700,color:f.weather_ok==="同意飛行"?"#155724":"#721c24"}}>
-              評估：{f.weather_ok||"—"}　觀察員：{f.weather_observer}
-            </div>
-          </div>
-        </div>
-      </Box>
-
-      {/* 飛安檢查 */}
-      <SecHeader title="機體飛安檢查紀錄" color={colors.teal} icon="✅"/>
-      <Box color={colors.teal}>
-        <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <thead>
-            <tr>
-              <th style={{background:colors.teal,color:"#fff",padding:"5px 8px",fontSize:12,textAlign:"left",border:"1px solid #ccc"}}>項目</th>
-              <th style={{background:colors.teal,color:"#fff",padding:"5px 8px",fontSize:12,textAlign:"center",border:"1px solid #ccc"}}>飛行前</th>
-              <th style={{background:colors.teal,color:"#fff",padding:"5px 8px",fontSize:12,textAlign:"center",border:"1px solid #ccc"}}>飛行後</th>
-              <th style={{background:colors.teal,color:"#fff",padding:"5px 8px",fontSize:12,border:"1px solid #ccc"}}>異常</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td colSpan={4} style={{background:"#e8f4fd",fontWeight:"bold",fontSize:12,padding:"4px 8px",border:"1px solid #ccc"}}>動力系統</td></tr>
-            {[["prop","螺旋槳：目視外觀無裂損"],["motor","馬達：固裝妥當及無裂損"],["dir","方向性：正/反槳安裝正確"]].map(([k,l])=>(
-              <tr key={k} style={{background:"#fff"}}>
-                <td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12}}>{l}</td>
-                <td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12,textAlign:"center",background:f.checks[`${k}_before`]==="是"?"#d4edda":f.checks[`${k}_before`]==="否"?"#f8d7da":"#fff"}}>{f.checks[`${k}_before`]||""}</td>
-                <td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12,textAlign:"center",background:f.checks[`${k}_after`]==="是"?"#d4edda":f.checks[`${k}_after`]==="否"?"#f8d7da":"#fff"}}>{f.checks[`${k}_after`]||""}</td>
-                <td style={{border:"1px solid #ccc",padding:"4px 8px"}}></td>
-              </tr>
-            ))}
-            <tr><td colSpan={4} style={{background:"#e8f4fd",fontWeight:"bold",fontSize:12,padding:"4px 8px",border:"1px solid #ccc"}}>載具</td></tr>
-            {[["bat","電池：外觀電壓確認固裝"],["arm","機臂：外觀確認固裝"],["body","機身及酬載：確認固裝"],["fc","飛行控制器：確認固裝"],["gps","GPS模組：確認固裝"],["elec","電系接頭：確認固裝"],["sys","全系統動態檢查"]].map(([k,l])=>(
-              <tr key={k} style={{background:"#fff"}}>
-                <td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12}}>{l}</td>
-                <td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12,textAlign:"center",background:f.checks[`${k}_before`]==="是"?"#d4edda":f.checks[`${k}_before`]==="否"?"#f8d7da":"#fff"}}>{f.checks[`${k}_before`]||""}</td>
-                <td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12,textAlign:"center",background:f.checks[`${k}_after`]==="是"?"#d4edda":f.checks[`${k}_after`]==="否"?"#f8d7da":"#fff"}}>{f.checks[`${k}_after`]||""}</td>
-                <td style={{border:"1px solid #ccc",padding:"4px 8px"}}></td>
-              </tr>
-            ))}
-            <tr>
-              <td colSpan={4} style={{border:"1px solid #ccc",padding:"6px 8px",fontSize:12,background:f.aircraft_ok==="同意飛行"?"#d4edda":f.aircraft_ok==="禁止飛行"?"#f8d7da":"#fff",fontWeight:700}}>
-                機體評估：{f.aircraft_ok||"—"}　操作員：＿＿＿＿（簽章）
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </Box>
-
-      {/* 空拍回饋 */}
-      <SecHeader title="空拍資訊回饋" color={colors.gray} icon="📸"/>
-      <Box color={colors.gray}>
-        <div style={{marginBottom:6}}>
-          <ChkDisp checked={f.aerial_normal} label="無異狀"/>
-          <ChkDisp checked={f.aerial_abnormal} label="有異狀" danger/>
-        </div>
-        <div style={{border:"1px solid #ddd",borderRadius:6,padding:10,minHeight:60,fontSize:13,background:"#fafafa",whiteSpace:"pre-wrap"}}>{f.aerial_desc||""}</div>
-      </Box>
+      <SH title="任務執行人員" color={C.blue} icon="👤"/><Box color={C.blue}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}><div style={{background:"#e8f4fd",borderRadius:6,padding:8}}><div style={{fontWeight:700,fontSize:12,color:C.blue,marginBottom:6}}>操作員</div><Row label="姓名" value={f.pilot_name} lc={C.blue}/><Row label="證別" value={f.pilot_cert_type} lc={C.blue}/><Row label="效期" value={f.pilot_cert_period} lc={C.blue}/><Row label="編號" value={f.pilot_cert_no} lc={C.blue}/><div style={{fontSize:11,color:"#888",marginTop:6}}>簽名：＿＿＿＿＿</div></div><div style={{background:"#f0fff4",borderRadius:6,padding:8}}><div style={{fontWeight:700,fontSize:12,color:C.green,marginBottom:6}}>觀察員</div><Row label="姓名" value={f.obs_name} lc={C.green}/><Row label="證別" value={f.obs_cert_type} lc={C.green}/><Row label="效期" value={f.obs_cert_period} lc={C.green}/><Row label="編號" value={f.obs_cert_no} lc={C.green}/><div style={{fontSize:11,color:"#888",marginTop:6}}>簽名：＿＿＿＿＿</div></div></div></Box>
+      <SH title="氣象相關資料" color={C.blue} icon="🌤"/><Box color={C.blue}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}><div><div style={{fontSize:12,fontWeight:700,color:C.blue,marginBottom:4}}>中央氣象署</div><div style={{marginBottom:4}}>{["晴天","多雲","陰天","雨天","其它"].map(w=><CD key={w} checked={f.weather_cwa?.includes(w)} label={w}/>)}</div><Row label="日出/落" value={`${f.sunrise}/${f.sunset}`} lc={C.blue}/><Row label="風速/等級" value={`${f.avg_wind}m/s ${f.wind_level}級`} lc={C.blue}/><Row label="能見度" value={`${f.visibility}km`} lc={C.blue}/><Row label="氣溫" value={f.temp} lc={C.blue}/><div style={{fontSize:11,color:"#666",marginTop:4}}>{f.wind_dir?.join(" ")}</div></div><div><div style={{fontSize:12,fontWeight:700,color:C.teal,marginBottom:4}}>任務地點</div><div style={{marginBottom:4}}>{["晴天","多雲","陰天","雨天(禁飛)","日出前日落後"].map(w=><CD key={w} checked={f.site_weather?.includes(w)} label={w} danger={w.includes("禁飛")}/>)}</div><Row label="現場風速" value={f.site_wind} lc={C.teal}/><Row label="現場氣溫" value={f.site_temp} lc={C.teal}/><div style={{marginTop:8,background:f.weather_ok==="同意飛行"?"#d4edda":"#f8d7da",borderRadius:6,padding:"6px 10px",fontSize:13,fontWeight:700,color:f.weather_ok==="同意飛行"?"#155724":"#721c24"}}>評估：{f.weather_ok||"—"}　{f.weather_observer}</div></div></div></Box>
+      <SH title="機體飛安檢查" color={C.teal} icon="✅"/><Box color={C.teal}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr><th style={{background:C.teal,color:"#fff",padding:"5px 8px",fontSize:12,textAlign:"left",border:"1px solid #ccc"}}>項目</th><th style={{background:C.teal,color:"#fff",padding:"5px 8px",fontSize:12,textAlign:"center",border:"1px solid #ccc"}}>飛行前</th><th style={{background:C.teal,color:"#fff",padding:"5px 8px",fontSize:12,textAlign:"center",border:"1px solid #ccc"}}>飛行後</th><th style={{background:C.teal,color:"#fff",padding:"5px 8px",fontSize:12,border:"1px solid #ccc"}}>異常</th></tr></thead><tbody><tr><td colSpan={4} style={{background:"#e8f4fd",fontWeight:"bold",fontSize:12,padding:"4px 8px",border:"1px solid #ccc"}}>動力系統</td></tr>{[["prop","螺旋槳"],["motor","馬達"],["dir","方向性"]].map(([k,l])=><tr key={k}><td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12}}>{l}</td><td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12,textAlign:"center",background:f.checks?.[`${k}_before`]==="是"?"#d4edda":f.checks?.[`${k}_before`]==="否"?"#f8d7da":"#fff"}}>{f.checks?.[`${k}_before`]||""}</td><td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12,textAlign:"center",background:f.checks?.[`${k}_after`]==="是"?"#d4edda":f.checks?.[`${k}_after`]==="否"?"#f8d7da":"#fff"}}>{f.checks?.[`${k}_after`]||""}</td><td style={{border:"1px solid #ccc",padding:"4px 8px"}}></td></tr>)}<tr><td colSpan={4} style={{background:"#e8f4fd",fontWeight:"bold",fontSize:12,padding:"4px 8px",border:"1px solid #ccc"}}>載具</td></tr>{[["bat","電池"],["arm","機臂"],["body","機身/酬載"],["fc","飛控"],["gps","GPS"],["elec","電系接頭"],["sys","全系統"]].map(([k,l])=><tr key={k}><td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12}}>{l}</td><td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12,textAlign:"center",background:f.checks?.[`${k}_before`]==="是"?"#d4edda":f.checks?.[`${k}_before`]==="否"?"#f8d7da":"#fff"}}>{f.checks?.[`${k}_before`]||""}</td><td style={{border:"1px solid #ccc",padding:"4px 8px",fontSize:12,textAlign:"center",background:f.checks?.[`${k}_after`]==="是"?"#d4edda":f.checks?.[`${k}_after`]==="否"?"#f8d7da":"#fff"}}>{f.checks?.[`${k}_after`]||""}</td><td style={{border:"1px solid #ccc",padding:"4px 8px"}}></td></tr>)}<tr><td colSpan={4} style={{border:"1px solid #ccc",padding:"6px 8px",fontSize:12,background:f.aircraft_ok==="同意飛行"?"#d4edda":f.aircraft_ok==="禁止飛行"?"#f8d7da":"#fff",fontWeight:700}}>機體評估：{f.aircraft_ok||"—"}　操作員：＿＿＿＿（簽章）</td></tr></tbody></table></Box>
+      <SH title="空拍資訊回饋" color={C.gray} icon="📸"/><Box color={C.gray}><div style={{marginBottom:6}}><CD checked={f.aerial_normal} label="無異狀"/><CD checked={f.aerial_abnormal} label="有異狀" danger/></div><div style={{border:"1px solid #ddd",borderRadius:6,padding:10,minHeight:60,fontSize:13,background:"#fafafa",whiteSpace:"pre-wrap"}}>{f.aerial_desc||""}</div></Box>
     </div>
   );
 }
 
 const btnB={background:"#38b6ff",color:"#fff",border:"none",borderRadius:6,padding:"8px 14px",fontSize:13,cursor:"pointer",fontWeight:600};
 const btnG={background:"#2ecc71",color:"#fff",border:"none",borderRadius:6,padding:"8px 14px",fontSize:13,cursor:"pointer",fontWeight:600};
+const btnY={background:"#f39c12",color:"#fff",border:"none",borderRadius:6,padding:"8px 14px",fontSize:13,cursor:"pointer",fontWeight:600};
+const btnR={background:"#e74c3c",color:"#fff",border:"none",borderRadius:6,padding:"8px 14px",fontSize:13,cursor:"pointer",fontWeight:600};
+const btnW={background:"#fff",color:"#333",border:"1px solid #ddd",borderRadius:6,padding:"8px 14px",fontSize:13,cursor:"pointer",fontWeight:600};
 
 createRoot(document.getElementById("root")).render(<App/>);
