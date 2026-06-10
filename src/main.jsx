@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const SUPABASE_URL = "https://tcsegbcefajkvfqfluyy.supabase.co";
 const SUPABASE_KEY = "sb_publishable_47tBfn1y8qMzNQIe8W-opg_hl4cUF4X";
@@ -263,7 +264,9 @@ export default function App(){
   );
 
   return(
-    <div style={{fontFamily:"sans-serif",background:"#f0f4f8",minHeight:"100vh",paddingBottom:80}}>
+    <>
+      <SpeedInsights />
+      <div style={{fontFamily:"sans-serif",background:"#f0f4f8",minHeight:"100vh",paddingBottom:80}}>
 
       {/* 頂部 */}
       <div style={{background:"#1a3251",color:"#fff",padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
@@ -427,7 +430,7 @@ export default function App(){
 
           <Section title="氣象資料" color="#2980b9" icon="🌤">
             <div style={{marginBottom:8}}>
-              <div style={{fontSize:12,color:"#666",marginBottom:4}}>中央氣象署天候</div>
+              <div style={{fontSize:12,color:"#666",marginBottom:4}}>中央氣象��天候</div>
               {["晴天","多雲","陰天","雨天","其它"].map(w=>(
                 <Chk key={w} checked={f.weather_cwa.includes(w)} onChange={()=>upd("weather_cwa",toggle(f.weather_cwa,w))} label={w}/>
               ))}
@@ -601,7 +604,8 @@ export default function App(){
           })}
         </div>
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
